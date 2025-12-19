@@ -109,7 +109,7 @@ class Board:
         else:
             return False       
     
-class Evaluator:
+"""class Evaluator:
     def __init__(self,board,my_snake):
         self.board = board
         self.my_snake = my_snake
@@ -149,7 +149,6 @@ class Evaluator:
         next_tail_x, current_tail_x = None, None
         
         if tail_index >= 0:
-            # 既存の_count_reachble_waysからコピーしたロジック
             next_tail_x = self.my_snake.body[tail_index]['x']
             next_tail_y = self.my_snake.body[tail_index]['y']
             current_tail_x = self.my_snake.body[tail_index+1]['x']
@@ -160,30 +159,24 @@ class Evaluator:
             self.grid_copy[next_tail_x][next_tail_y] = GridState.MY_TAIL
             self.grid_copy[current_tail_x][current_tail_y] = GridState.SPACE
 
-        # 3-2. 現在の頭の位置を占有（探索済みとしてマーク）
         current_cell = self.grid_copy[current_x][current_y]
-        self.grid_copy[current_x][current_y] = GridState.EXPLORED # 占有
+        self.grid_copy[current_x][current_y] = GridState.EXPLORED 
 
-        # 3-3. 食糧の有無判定と状態の更新
         next_food_count = food_count
         next_tail_stop = tail_stop
         if self.board.grid[current_x][current_y] == GridState.FOOD and food_count == 0:
             next_food_count += 1
-            next_tail_stop = True # 食糧を見つけたら、尻尾は動かないシミュレーションへ
-
-        # --- 4. 探索の継続（次の手へ） ---
+            next_tail_stop = True 
         if depth < self.MAX_DEPTH:
             for vector in [[1,0], [-1,0], [0,1], [0,-1]]:
                 next_x, next_y = current_x + vector[0], current_y + vector[1]
                 
-                # 次のマスを再帰的に探索
+                
                 self._simulate_all_paths(next_x, next_y, depth + 1, path_list, next_tail_stop, next_food_count)
 
-        # --- 5. 盤面状態の復元（バックトラック） ---
-        self.grid_copy[current_x][current_y] = current_cell # 占有を解放
+        self.grid_copy[current_x][current_y] = current_cell 
         
         if tail_index >= 0:
-            # 尻尾の状態を元に戻す
             self.grid_copy[next_tail_x][next_tail_y] = next_tail_cell
             self.grid_copy[current_tail_x][current_tail_y] = current_tail_cell
 
@@ -381,6 +374,122 @@ class Evaluator:
             return True
         else:
             return False   
+"""
+
+class Evaluator:
+    def __init__(self, board, my_snake):
+        self.board = board
+        self.my_snake = my_snake
+        # 探索深度の設定（スネークの長さに応じて可変）
+        self.MAX_DEPTH = max(8, int(my_snake.length / 2)) 
+        
+    def evaluate_move(self, move):
+        """
+        指定された方向(move)に進んだ場合の「未来」を単一の探索で解析する。
+        戻り値: {
+            'max_depth': 生存できた最大ターン数,
+            'space_coverage': 到達可能なユニークなマスの数（広さ）,
+            'food_found': 探索中に見つけた餌の数,
+            'is_safe': 即死しないか
+        }
+        """
+        head_x, head_y = self.my_snake.head['x'], self.my_snake.head['y']
+        
+        # 次の座標
+        vectors = {"up": (0, 1), "down": (0, -1), "left": (-1, 0), "right": (1, 0)}
+        dx, dy = vectors[move]
+        next_x, next_y = head_x + dx, head_y + dy
+
+        # 0手目の即死判定
+        # 3ターン目以降で、自分の尻尾なら安全（移動すると空くため）という特例も考慮
+        tail_safe = (self.board.turn > 3 and 
+                     next_x == self.my_snake.tail['x'] and 
+                     next_y == self.my_snake.tail['y'])
+        
+        if not self.board.check_range(next_x, next_y):
+            return {'max_depth': 0, 'space_coverage': 0, 'food_found': 0, 'is_safe': False}
+            
+        cell = self.board.grid[next_x][next_y]
+        if not (cell == GridState.SPACE or cell == GridState.FOOD or tail_safe):
+            return {'max_depth': 0, 'space_coverage': 0, 'food_found': 0, 'is_safe': False}
+
+        # --- 統合シミュレーション開始 ---
+        
+        # 統計情報を保持するコンテナ
+        stats = {
+            'max_depth': 0,
+            'visited_nodes': set(), # 重複を除いた到達マス（Coverage用）
+            'food_count': 0
+        }
+        
+        # 1手目を進める（Do）
+        original_state = self.board.grid[next_x][next_y]
+        self.board.grid[next_x][next_y] = GridState.MY_HEAD # 仮の自分の頭
+        stats['visited_nodes'].add((next_x, next_y))
+        if original_state == GridState.FOOD:
+            stats['food_count'] += 1
+
+        # 再帰探索の実行
+        self._explore_recursive(next_x, next_y, 1, stats)
+
+        # 1手目を戻す（Undo）
+        self.board.grid[next_x][next_y] = original_state
+        
+        return {
+            'max_depth': stats['max_depth'],
+            'space_coverage': len(stats['visited_nodes']),
+            'food_found': stats['food_count'],
+            'is_safe': True
+        }
+
+    def _explore_recursive(self, current_x, current_y, depth, stats):
+        """
+        _simulate_all_paths と _count_reachble_ways を統合したコア関数。
+        Backtrackingを用いて grid を汚さずに探索する。
+        """
+        # 最大深度到達で終了
+        if depth >= self.MAX_DEPTH:
+            stats['max_depth'] = max(stats['max_depth'], depth)
+            return
+
+        # 統計更新
+        stats['max_depth'] = max(stats['max_depth'], depth)
+
+        # 4方向への分岐
+        moves = [(0, 1), (0, -1), (-1, 0), (1, 0)]
+        
+        # 尻尾が動くシミュレーション（簡易版）
+        # 本来は毎ターン尻尾が消えるが、計算コスト削減のため
+        # 「深さがスネーク長を超えたら尻尾マスは空いている」とみなす等の近似が可能
+        # ここでは厳密さを少し犠牲にして高速化する（GridState.SPACEのみに進む）
+
+        for dx, dy in moves:
+            nx, ny = current_x + dx, current_y + dy
+            
+            # 範囲外チェック
+            if not self.board.check_range(nx, ny):
+                continue
+                
+            cell = self.board.grid[nx][ny]
+            
+            # 移動可能判定 (Space または Food)
+            # ※ここで「既に探索済み(MY_HEADなど)」も弾かれるため、無限ループ防止になる
+            if cell == GridState.SPACE or cell == GridState.FOOD:
+                
+                # --- Do (状態変更) ---
+                self.board.grid[nx][ny] = GridState.EXPLORED # 探索済みマーク
+                stats['visited_nodes'].add((nx, ny))
+                food_bonus = 1 if cell == GridState.FOOD else 0
+                
+                # --- Recurse (再帰) ---
+                self._explore_recursive(nx, ny, depth + 1, stats)
+                
+                if food_bonus:
+                    stats['food_count'] += 1
+
+                # --- Undo (状態復元) ---
+                self.board.grid[nx][ny] = cell
+
 
 # move is called on every turn and returns your next move
 # Valid moves are "up", "down", "left", or "right"
@@ -401,8 +510,7 @@ def move(game_state: typing.Dict) -> typing.Dict:
 
 
 
-def choose_best_move(my_snake, evaluater):
-    # 1. 基本パラメータと安全確認
+"""def choose_best_move(my_snake, evaluater):
     HEALTH_LEVEL = max(12, my_snake.length + 5)
     if my_snake.length >= 25:
         HEALTH_LEVEL = my_snake.length + 10
@@ -414,8 +522,8 @@ def choose_best_move(my_snake, evaluater):
         print("There is no safe moves!")
         return None
 
-    # 2. 網羅的シミュレーションの実行とフィルタリング
-    evaluater.ALL_SIMULATION_PATHS = [] # 収集リストをクリア
+    
+    evaluater.ALL_SIMULATION_PATHS = [] 
     path_metrics = {move: {"variety": 0, "coverage": 0} for move in ["up", "down", "left", "right"]}
     
     for move in safe_moves:
@@ -425,74 +533,104 @@ def choose_best_move(my_snake, evaluater):
         elif move == 'left': next_x, next_y = current_x - 1, current_y
         elif move == 'right': next_x, next_y = current_x + 1, current_y
         
-        # この方向から始まるパスの開始インデックスを記録
+        
         start_idx = len(evaluater.ALL_SIMULATION_PATHS)
         
-        # 探索実行
+        
         evaluater._simulate_all_paths(next_x, next_y, 1, [], False, 0)
         
-        # この移動方向に関連するパスのみを抽出
+        
         move_paths = evaluater.ALL_SIMULATION_PATHS[start_idx:]
         
         if move_paths:
-            # 多様性：MAX_DEPTHまで到達可能な全ルート数
+            
             path_metrics[move]["variety"] = len(move_paths)
-            # 広がり：終点のユニーク座標数（エリアの広さ）
+            
             unique_endpoints = {(p['e']['x'], p['e']['y']) for p in move_paths}
             path_metrics[move]["coverage"] = len(unique_endpoints)
 
-    # 3. 補助的な空間・食糧データの取得
+    
     reachble_counts = evaluater.asess_reachble_counts()
     direction_counts = evaluater.get_direction_counts()
     food_counts = evaluater.asess_food_counts()
     explored_counts = evaluater.asess_explored_counts()
     tail_distances = evaluater.asess_tail_distances()
     
-    # 重み付け（戦略の設計図）
-    VARIETY_W = 1.0    # 選択肢の多さ
-    COVERAGE_W = 5.0   # 空間の広がり（重要）
-    REACH_W = 10.0     # Flood Fillによる最大到達距離
+    
+    VARIETY_W = 1.0   
+    COVERAGE_W = 5.0   
+    REACH_W = 10.0     
     FOOD_W = 20.0
     
     move_scores = {move: -9999 for move in ["up", "down", "left", "right"]}
 
-    # 4. 戦略別のスコアリング
-    # A. 生存優先戦略 (ヘルス十分)
     if my_snake.health > HEALTH_LEVEL or my_snake.length >= 34:
         for move in safe_moves:
-            # 網羅的探索のメトリクスを基本点とする
+            
             sim_score = (path_metrics[move]["variety"] * VARIETY_W) + \
                         (path_metrics[move]["coverage"] * COVERAGE_W)
             
-            # 従来の生存指標を統合
+            
             move_scores[move] = sim_score + \
                                (reachble_counts[move] * REACH_W) + \
                                (3 - food_counts[move]) * FOOD_W - \
                                (tail_distances[move] * 1.5) - \
                                (direction_counts[move] * 2.0)
             
-    # B. 食糧優先戦略 (ヘルス低下)
     else:
         food_candidates = evaluater.get_food_candidates()
-        # 食糧優先時は、シミュレーション結果の中から「食糧を摂った後の生存性」が高いパスを選ぶ
-        # ここでは簡易的に、食糧候補の中から「多様性(variety)」が最も高い方向を選択する
+      
         for move in safe_moves:
             sim_score = (path_metrics[move]["variety"] * VARIETY_W) + \
                         (path_metrics[move]["coverage"] * COVERAGE_W)
             
-            # 食糧候補リストと照らし合わせる
+            
             is_food_route = any(c['move'] == move for c in food_candidates)
             food_bonus = 50 if is_food_route else 0
             
             move_scores[move] = sim_score + (reachble_counts[move] * REACH_W) + food_bonus
 
-    # 5. 最終決定
+    
     best_move = max(safe_moves, key=lambda m: move_scores[m])
     
-    # デバッグ情報の出力（構造の可視化）
+    
     print(f"Metrics: {path_metrics}")
     print(f"Final Scores: {move_scores}")
     
+    return best_move
+"""
+
+def choose_best_move(my_snake, evaluator):
+    possible_moves = ["up", "down", "left", "right"]
+    move_scores = {}
+
+    print(f"--- Turn {evaluator.board.turn} Analysis ---")
+
+    for move in possible_moves:
+        # 統合された評価関数を呼ぶ
+        result = evaluator.evaluate_move(move)
+        
+        if not result['is_safe']:
+            move_scores[move] = -99999
+            continue
+            
+        # スコアリング（重み付けは調整してください）
+        # 生存ターン数（最優先）
+        score = result['max_depth'] * 10
+        
+        # 空間支配率（狭い場所より広い場所へ）
+        score += result['space_coverage'] * 2
+        
+        # 餌の発見
+        if my_snake.health < 40: # お腹が空いている時だけ強く反応
+             score += result['food_found'] * 50
+        else:
+             score += result['food_found'] * 5 
+
+        move_scores[move] = score
+        print(f"Move {move}: Score {score} (Depth: {result['max_depth']}, Space: {result['space_coverage']})")
+
+    best_move = max(move_scores, key=move_scores.get)
     return best_move
 
 def print_scores(reachble_counts,food_counts,explored_counts,tail_distances,direction_counts,move_scores):
